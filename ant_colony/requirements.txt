@@ -1,7 +1,5 @@
 mesa==2.3.0
 numpy
-matplotlib
-tornado
 scipy
-# ROS2 bridge (optional - requires ROS2 installation)
-# rclpy
+rclpy
+matplotlib
