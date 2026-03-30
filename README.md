@@ -58,6 +58,20 @@ python run.py
 ```
 Open http://localhost:8521 in your browser to view the interactive simulation.
 
+### **Docker Deployment** 🐳
+For easy deployment and scaling:
+
+```bash
+# Build and run with Docker Compose
+docker-compose up --build
+
+# Or build manually
+docker build -t ant-colony-sim .
+docker run -p 8521:8521 ant-colony-sim
+```
+
+The simulation will be available at http://localhost:8521
+
 ### **Run Tests**
 ```bash
 python test_queen_survival.py  # Test queen longevity
@@ -171,7 +185,29 @@ print('Simulation stable after 100 steps')
 4. Add tests for new functionality
 5. Submit a pull request
 
-## 📄 **License**
+## � **Support Our Research**
+
+Help us advance neuromorphic AI and swarm intelligence research! Your support enables:
+
+- 🧠 **Neuromorphic Computing**: Develop brain-inspired AI that's 1000x more energy-efficient
+- 🤖 **Swarm Robotics**: Create autonomous systems for real-world applications
+- 🔬 **Open Research**: Fund scientific publications and community development
+
+### **Ways to Support**
+- **💖 [GitHub Sponsors](https://github.com/sponsors/chinmaykx07)**: Monthly sponsorship
+- **🧑‍💻 Contribute Code**: Join our open-source development
+- **📢 Spread the Word**: Share our research with your network
+- **📧 Contact**: research@ant-colony.ai for institutional partnerships
+
+### **Funding Needs**
+- Cloud computing resources ($200/month)
+- Hardware development ($500 one-time)
+- Research publications ($1,000/year)
+- Software tools & licenses ($300/month)
+
+Visit our [donation page](donate.html) for more information.
+
+## �📄 **License**
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 

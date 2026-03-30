@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  ant-colony-sim:
+    build: .
+    ports:
+      - "8521:8521"
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - ./ant_colony:/app/ant_colony:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pidof", "python"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ant-colony-network
+
+networks:
+  ant-colony-network:
+    driver: bridge
