@@ -5,16 +5,20 @@ from mesa.space import MultiGrid
 from mesa.time import RandomActivation
 from mesa.datacollection import DataCollector
 from agent import AntAgent, RockAgent, GarbageAgent, PheromoneAgent, QueenAgent, PrincessAgent
+from scipy.signal import convolve2d
 import json
 
 
 class AntColonyModel(mesa.Model):
-    def __init__(self, width=30, height=30, initial_ants=20, seed=None):
+    def __init__(self, width=100, height=100, initial_ants=20, seed=None):
         super().__init__(seed=seed)
         self.width = width
         self.height = height
         self.grid = MultiGrid(width, height, torus=False)
         self.schedule = RandomActivation(self)
+
+        # Vectorized pheromone diffusion kernel
+        self.diffusion_kernel = np.array([[0.05, 0.1, 0.05],[0.1, 0.4, 0.1],[0.05, 0.1, 0.05]])
 
         self.pheromone_map = np.zeros((width, height), dtype=float)
         self.home_pheromone_map = np.zeros((width, height), dtype=float)
@@ -36,6 +40,20 @@ class AntColonyModel(mesa.Model):
             'super_intelligence': False,  # At 500 evolution points
             'hero_scout': False,  # At 1000 evolution points
         }
+
+        # 2026 Ultimate Stabilization: Colony Health Dashboard
+        self.metabolic_persistence_index = 1.0  # MPI: energy_collected / energy_burned
+        self.knowledge_diffusion_rate = 0.0  # KDR: speed of TFL wave propagation
+        self.colony_entropy = 0.0  # Σ: measure of task disorder
+        
+        # Liberation Threshold System
+        self.inhibitory_pheromone_strength = 1.0  # Queen's inhibitory signal
+        self.colony_density = 0.0  # ants per unit area
+        self.liberation_events = 0  # Number of colony splits
+        
+        # Metabolic tracking for MPI calculation
+        self.total_energy_burned = 0.0
+        self.total_energy_collected = 0.0
 
         self.resource_type_map = {
             1: "food",
@@ -70,6 +88,13 @@ class AntColonyModel(mesa.Model):
                 "Biomass": lambda m: m.colony_biomass,
                 "SwarmIntellect": lambda m: m.swarm_intellect,
                 "EvolutionPoints": lambda m: m.evolution_points,
+                # 2026 Ultimate Stabilization: Colony Health Dashboard
+                "MetabolicPersistenceIndex": lambda m: m.metabolic_persistence_index,
+                "KnowledgeDiffusionRate": lambda m: m.knowledge_diffusion_rate,
+                "ColonyEntropy": lambda m: m.colony_entropy,
+                "ColonyDensity": lambda m: m.colony_density,
+                "InhibitoryPheromoneStrength": lambda m: m.inhibitory_pheromone_strength,
+                "LiberationEvents": lambda m: m.liberation_events,
             }
         )
 
@@ -100,10 +125,10 @@ class AntColonyModel(mesa.Model):
         # Queen starts with a small credit of food to be stable
         self.resource_inventory["food"] = 100
 
-        # Generate random trash heaps: 15 scattered 3x3 blocks of garbage
+        # Generate random trash heaps: 5 scattered 3x3 blocks of garbage
         np.random.seed(seed)
         
-        for _ in range(15):
+        for _ in range(5):
             trash_x = np.random.randint(max(1, width//4), min(width-1, width - width//4))
             trash_y = np.random.randint(max(1, height//4), min(height-1, height - height//4))
             for dx in range(-1, 2):
@@ -172,17 +197,7 @@ class AntColonyModel(mesa.Model):
         self.death_beacon_map[self.death_beacon_map > 0] -= 1
 
         # Diffusion: spread 10% to neighbors
-        new_map = self.pheromone_map.copy()
-        for x in range(self.width):
-            for y in range(self.height):
-                value = self.pheromone_map[x, y]
-                if value > 0:
-                    spread = value * 0.1
-                    for dx, dy in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
-                        nx, ny = x + dx, y + dy
-                        if 0 <= nx < self.width and 0 <= ny < self.height:
-                            new_map[nx, ny] += spread
-        self.pheromone_map = new_map
+        self.pheromone_map = convolve2d(self.pheromone_map, self.diffusion_kernel, mode='same', boundary='wrap')
 
         # Update pheromone agent values
         for pos, agent in self.pheromone_agents.items():
@@ -197,16 +212,8 @@ class AntColonyModel(mesa.Model):
         # Diffuse home pheromone (slow decay, never disappears fully)
         self.home_pheromone_map *= 0.995
         self.home_pheromone_map[self.home_pheromone_map < 0.01] = 0.01
-        home_new = self.home_pheromone_map.copy()
-        for x in range(self.width):
-            for y in range(self.height):
-                value = self.home_pheromone_map[x, y]
-                spread = value * 0.05
-                for dx, dy in [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]:
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < self.width and 0 <= ny < self.height:
-                        home_new[nx, ny] += spread
-        self.home_pheromone_map = home_new
+        # Diffuse home pheromone (vectorized)
+        self.home_pheromone_map = convolve2d(self.home_pheromone_map, self.diffusion_kernel, mode='same', boundary='wrap')
 
         # Hunger increases over time toward 1.0
         self.colony_hunger = min(1.0, self.colony_hunger + 0.005)
@@ -233,6 +240,9 @@ class AntColonyModel(mesa.Model):
         self.pheromone_garbage[self.pheromone_garbage < 0.01] = 0.0
         self.pheromone_nectar *= 0.98
         self.pheromone_nectar[self.pheromone_nectar < 0.01] = 0.0
+
+        # 2026 Ultimate Stabilization: Liberation Threshold System
+        self.update_liberation_thresholds()
 
         # Collect statistics
         self.datacollector.collect(self)
@@ -323,4 +333,112 @@ class AntColonyModel(mesa.Model):
         
         with open(filename, "w") as f:
             json.dump(data, f, indent=4)
+
+    def update_liberation_thresholds(self):
+        """Calculate colony health metrics and trigger liberation events."""
+        # Calculate colony density (ants per unit area)
+        ant_count = sum(1 for agent in self.schedule.agents if isinstance(agent, AntAgent))
+        self.colony_density = ant_count / (self.width * self.height)
+        
+        # Calculate Metabolic Persistence Index (MPI)
+        if self.total_energy_burned > 0:
+            self.metabolic_persistence_index = self.total_energy_collected / self.total_energy_burned
+        else:
+            self.metabolic_persistence_index = 1.0
+        
+        # Calculate Knowledge Diffusion Rate (KDR) - speed of TFL wave propagation
+        # Simplified: measure pheromone spread rate as proxy for knowledge diffusion
+        pheromone_coverage = np.sum(self.pheromone_map > 0.1) / (self.width * self.height)
+        self.knowledge_diffusion_rate = pheromone_coverage
+        
+        # Calculate Colony Entropy (Σ) - measure of task disorder
+        # Simplified: variance in ant roles as proxy for task specialization
+        role_counts = {}
+        for agent in self.schedule.agents:
+            if isinstance(agent, AntAgent):
+                role = agent.role
+                role_counts[role] = role_counts.get(role, 0) + 1
+        
+        if role_counts:
+            total_ants = sum(role_counts.values())
+            role_proportions = [count / total_ants for count in role_counts.values()]
+            # Shannon entropy calculation
+            self.colony_entropy = -sum(p * np.log(p) for p in role_proportions if p > 0)
+        else:
+            self.colony_entropy = 0.0
+        
+        # Liberation Threshold Logic
+        # Threshold 1: Colony density exceeds sustainable limit
+        density_threshold = 0.05  # 5% of grid occupied by ants
+        
+        # Threshold 2: Metabolic stress (MPI drops below threshold)
+        mpi_threshold = 0.8  # Energy collected < 80% of energy burned
+        
+        # Threshold 3: Task disorder (high entropy indicates lack of specialization)
+        entropy_threshold = 1.5  # High entropy = chaotic behavior
+        
+        # Threshold 4: Inhibitory pheromone strength (Queen's control weakening)
+        inhibitory_threshold = 2.0  # Queen's signal strength
+        
+        if (self.colony_density > density_threshold or 
+            self.metabolic_persistence_index < mpi_threshold or
+            self.colony_entropy > entropy_threshold or
+            self.inhibitory_pheromone_strength > inhibitory_threshold):
+            
+            self.trigger_liberation_event()
+            
+            # Reset inhibitory pheromone strength after liberation
+            self.inhibitory_pheromone_strength = max(1.0, self.inhibitory_pheromone_strength * 0.8)
+    
+    def trigger_liberation_event(self):
+        """Spawn founder queens to create new colonies."""
+        self.liberation_events += 1
+        
+        # Find mature ants to become founder queens (high XP ants)
+        potential_founders = []
+        for agent in self.schedule.agents:
+            if isinstance(agent, AntAgent) and agent.xp > 50:  # Experienced ants
+                potential_founders.append(agent)
+        
+        # Spawn up to 3 founder queens
+        founders_to_spawn = min(3, len(potential_founders))
+        
+        for i in range(founders_to_spawn):
+            if potential_founders:
+                founder_ant = potential_founders.pop(0)
+                founder_pos = founder_ant.pos
+                
+                # Remove the ant (becomes queen)
+                self.grid.remove_agent(founder_ant)
+                self.schedule.remove(founder_ant)
+                
+                # Spawn founder queen at ant's location
+                founder_queen = QueenAgent(
+                    self.next_id(),
+                    self,
+                    founder_pos,
+                    genome=founder_ant.weights,  # Use ant's brain as queen genome
+                    tribe_id=self.current_generation + self.liberation_events,
+                    is_founder=True
+                )
+                self.grid.place_agent(founder_queen, founder_pos)
+                self.schedule.add(founder_queen)
+                
+                # Give founder queen initial seed swarm (3-5 ants)
+                seed_swarm_size = np.random.randint(3, 6)
+                for _ in range(seed_swarm_size):
+                    seed_ant = AntAgent(
+                        self.next_id(),
+                        self,
+                        founder_pos,
+                        role="worker",
+                        tribe_id=founder_queen.tribe_id,
+                        parent_queen=founder_queen
+                    )
+                    # Place near queen
+                    dx, dy = np.random.randint(-2, 3), np.random.randint(-2, 3)
+                    seed_pos = (max(0, min(self.width-1, founder_pos[0] + dx)),
+                               max(0, min(self.height-1, founder_pos[1] + dy)))
+                    self.grid.place_agent(seed_ant, seed_pos)
+                    self.schedule.add(seed_ant)
 

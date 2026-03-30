@@ -53,7 +53,72 @@ python test_hnm.py
 
 This verifies the HNM system prevents the "Too Smart to Survive" extinction spiral.
 
-## 📁 Project Structure
+## 🤖 ROS2 Integration for Robotics
+
+The simulation includes a ROS2 bridge for real-world deployment on drone swarms and robotic systems.
+
+### **ROS2 Setup (Ubuntu 22.04)**
+```bash
+# Install ROS2 Humble
+sudo apt update
+sudo apt install software-properties-common
+sudo add-apt-repository universe
+sudo apt update && sudo apt install curl -y
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+sudo apt update
+sudo apt upgrade
+sudo apt install ros-humble-desktop python3-colcon-common-extensions
+
+# Source ROS2
+echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+source ~/.bashrc
+
+# Install Python ROS2 packages
+pip install rclpy
+```
+
+### **Running ROS2 Bridge**
+```bash
+# Terminal 1: Start ROS2 daemon
+ros2 daemon start
+
+# Terminal 2: Launch bridge
+python ros2_bridge.py
+
+# Terminal 3: Launch RViz2
+rviz2
+```
+
+### **Testing ROS2 Bridge (Without ROS2 Installation)**
+```bash
+# Run the bridge test suite
+python test_ros2_bridge.py
+```
+
+This validates the complete neuromorphic swarm simulation and ROS2 data publishing logic.
+
+### **RViz2 Configuration**
+1. Add `OccupancyGrid` display for pheromones/obstacles
+2. Add `MarkerArray` display for agents
+3. Set fixed frame to `ant_colony_map`
+
+### **Published Topics**
+- `/ant_colony/occupancy_grid`: Pheromone maps and obstacles
+- `/ant_colony/markers`: Agent positions (blue=explore, yellow=return, red=queen)
+- `/ant_colony/status`: Simulation statistics
+
+## � Citations & Acknowledgements
+
+This project stands on the shoulders of giants in the open-source robotics and scientific computing communities. For full details on citations, licenses, and intellectual property statements, see [ATTRIBUTIONS.md](../ATTRIBUTIONS.md).
+
+**Key Open-Source Dependencies:**
+- **ROS 2**: Robotics communication and visualization framework
+- **Mesa**: Agent-based modeling framework  
+- **SciPy/NumPy**: Scientific computing and convolution operations
+- **Tornado**: Web server for the simulation interface
+
+## �📁 Project Structure
 
 - `agent.py`: AntAgent, QueenAgent, PrincessAgent with neuromorphic brains
 - `model.py`: Simulation environment with pheromone maps and evolution tracking

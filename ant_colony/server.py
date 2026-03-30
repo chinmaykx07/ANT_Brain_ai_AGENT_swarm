@@ -33,20 +33,45 @@ def agent_portrayal(agent):
         base = base_colors[tribe]
         if agent.state == "EXPLORE":
             color = f"#{base}00FF"
-        else:
+        elif agent.state == "RETURN":
             color = f"#{base}0000"
+        elif agent.state == "EXPLOIT_MEMORY":
+            color = "yellow"
+            # EBGL Lock Visualization: Show commitment level
+            if hasattr(agent, 'goal_locked') and agent.goal_locked:
+                # Locked ants have a pulsing border based on lock persistence
+                persistence_ratio = min(1.0, agent.goal_persistence_bonus / 10.0)
+                stroke_width = 2
+                stroke_color = "orange" if persistence_ratio > 0.5 else "red"
+                # Add escrow amount as text overlay
+                escrow_text = f"{agent.goal_escrow:.1f}" if agent.goal_escrow > 0 else ""
+            else:
+                stroke_width = 0
+                stroke_color = None
+                escrow_text = ""
         # Age fading towards gray
         gray_level = int(150 + 105 * ratio)
         if ratio > 0.7:
             color = f"#{gray_level:02x}{gray_level:02x}{gray_level:02x}"
 
-        # 2026 Frontier: Metabolic Glow for High Sugar Ants
+        # Initialize stroke variables
         stroke_width = 0
         stroke_color = None
-        if agent.sugar_saturation > 0.8:
+        escrow_text = ""
+
+        # EBGL Lock Visualization: Show commitment level
+        if agent.state == "EXPLOIT_MEMORY" and hasattr(agent, 'goal_locked') and agent.goal_locked:
+            # Locked ants have a pulsing border based on lock persistence
+            persistence_ratio = min(1.0, agent.goal_persistence_bonus / 10.0)
+            stroke_width = 2
+            stroke_color = "orange" if persistence_ratio > 0.5 else "red"
+            escrow_text = f"{agent.goal_escrow:.1f}" if agent.goal_escrow > 0 else ""
+
+        # 2026 Frontier: Metabolic Glow for High Sugar Ants (only if not EBGL locked)
+        if agent.sugar_saturation > 0.8 and stroke_width == 0:
             stroke_width = 2
             stroke_color = "magenta"
-        elif agent.sugar_saturation > 0.5:
+        elif agent.sugar_saturation > 0.5 and stroke_width == 0:
             stroke_width = 1
             stroke_color = "cyan"
 
@@ -70,39 +95,43 @@ def agent_portrayal(agent):
         return portrayal
 
     if isinstance(agent, PrincessAgent):
+        color = "purple" if agent.state == "INCUBATE" else "magenta"
         return {
-            "Shape": "triangle",
+            "Shape": "circle",
             "Filled": "true",
             "Layer": 4,
-            "Color": "magenta",
-            "r": 0.7,
+            "Color": color,
+            "r": 0.8,
         }
 
     if isinstance(agent, QueenAgent):
-        health_ratio = max(0.0, min(1.0, agent.health / 100.0))
-        r = int(255 * health_ratio)
-        g = int(215 * health_ratio)
-        b = 0
-        color = f"#{r:02x}{g:02x}{b:02x}"
-        
-        # Homeostatic Neuro-Modulation: Distress signal when population low
-        worker_count = sum(1 for a in agent.model.schedule.agents if isinstance(a, AntAgent) and a.role in ["worker", "scavenger", "scout"])
-        stroke_width = 0
-        stroke_color = None
-        if worker_count < 10:
-            stroke_width = 3
-            stroke_color = "red"
-        
+        # Founder Queen Visual Distinction: Cyan/White aura vs Gold
+        if hasattr(agent, 'is_founder') and agent.is_founder:
+            color = "cyan"  # Founder queens have cyan aura
+            stroke_color = "white"
+            stroke_width = 2
+        else:
+            color = "gold"  # Original queen is gold
+            stroke_color = None
+            stroke_width = 0
+            
         portrayal = {
             "Shape": "circle",
             "Filled": "true",
             "Layer": 3,
             "Color": color,
-            "r": 0.8,
+            "r": 1.0,
             "Stroke": stroke_width,
         }
         if stroke_color:
             portrayal["StrokeColor"] = stroke_color
+            
+        # Homeostatic Neuro-Modulation: Distress signal when population low
+        worker_count = sum(1 for a in agent.model.schedule.agents if isinstance(a, AntAgent) and a.role in ["worker", "scavenger", "scout"])
+        if worker_count < 10:
+            portrayal["Stroke"] = 3
+            portrayal["StrokeColor"] = "red"
+        
         return portrayal
 
     return None
@@ -153,6 +182,22 @@ class NectarText(TextElement):
         return f"🍯 Nectar Collected: {model.total_nectar_collected} | 🗑️ Garbage: {model.total_garbage_collected}"
 
 
+class ColonyHealthText(TextElement):
+    def render(self, model):
+        mpi = f"{model.metabolic_persistence_index:.2f}"
+        entropy = f"{model.colony_entropy:.2f}"
+        density = f"{model.colony_density:.3f}"
+        liberation = model.liberation_events
+        return f"🏥 MPI: {mpi} | Σ: {entropy} | Density: {density} | Liberations: {liberation}"
+
+
+class InhibitoryPheromoneText(TextElement):
+    def render(self, model):
+        strength = f"{model.inhibitory_pheromone_strength:.2f}"
+        kdr = f"{model.knowledge_diffusion_rate:.2f}"
+        return f"🧠 Inhibitory: {strength} | KDR: {kdr}"
+
+
 class LifespanText(TextElement):
     def render(self, model):
         active_workers = [a for a in model.schedule.agents if isinstance(a, AntAgent)]
@@ -173,7 +218,7 @@ class HeroBrainText(TextElement):
         return f"Queens Born: {model.queens_born}, Biomass: {model.colony_biomass}"
 
 
-grid = CanvasGrid(agent_portrayal, 30, 30, 600, 600)
+grid = CanvasGrid(agent_portrayal, 100, 100, 800, 800)
 population_text = PopulationText()
 generation_text = GenerationText()
 lifespan_text = LifespanText()
@@ -181,6 +226,8 @@ recycled_text = RecycledText()
 swarm_intellect_text = SwarmIntellectText()
 evolution_text = EvolutionText()
 nectar_text = NectarText()
+colony_health_text = ColonyHealthText()
+inhibitory_text = InhibitoryPheromoneText()
 
 population_chart = ChartModule(
     [{"Label": "Population", "Color": "#0000FF"}],
@@ -208,6 +255,8 @@ server = ModularServer(
      swarm_intellect_text,
      evolution_text,
      nectar_text,
+     colony_health_text,
+     inhibitory_text,
      lifespan_text, 
      recycled_text, 
      hero_brain_text,

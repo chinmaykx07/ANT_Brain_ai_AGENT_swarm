@@ -41,6 +41,8 @@ class QueenAgent(Agent):
         }
         self.weights = [random.uniform(-1, 1) for _ in range(6)]  # Neural weights for inheritance
         self.previous_garbage = 0
+        self.colony_reserves = 0
+        self.last_food_count = 0
 
     def step(self):
         self.step_counter += 1
@@ -185,26 +187,77 @@ class QueenAgent(Agent):
             self.model.resource_inventory["ecosystem"] -= 20
             self.model.colony_hunger = max(0.0, self.model.colony_hunger - 0.05)
 
-        # Spawn princess when prosperous (queen birthing)
-        if self.model.resource_inventory.get("food", 0) >= 40 and self.model.resource_inventory.get("building_material", 0) >= 20 and self.model.evolution_points >= 500:
-            self.model.resource_inventory["food"] -= 20
-            self.model.resource_inventory["building_material"] -= 20
-            princess = PrincessAgent(
-                self.model.next_id(),
-                self.model,
-                self.pos,
-                parent_tribe=self.tribe_id,
-                parent_lifespan_multiplier=self.lifespan_multiplier,
-                parent_scent_sensitivity=self.scent_sensitivity,
-                parent_genome=self.genome,
-            )
-            # Find empty adjacent position
-            neighbors = self.model.grid.get_neighborhood(self.pos, moore=True, include_center=False)
-            empty_neighbors = [n for n in neighbors if not any(self.model.grid.get_cell_list_contents([n])) and not self.model.obstacle_map[n[0], n[1]] and self.model.garbage_map[n[0], n[1]] == 0]
-            if empty_neighbors:
-                spawn_pos = self.random.choice(empty_neighbors)
-                self.model.grid.place_agent(princess, spawn_pos)
-                self.model.schedule.add(princess)
+        # Metabolic Surplus tracking
+        current_food = self.model.resource_inventory.get("food", 0)
+        if current_food > self.last_food_count:
+            self.colony_reserves += (current_food - self.last_food_count)
+        self.last_food_count = current_food
+
+        # Spawn princess when prosperous (queen birthing) - OR founder queens during liberation
+        worker_count = sum(1 for a in self.model.schedule.agents if isinstance(a, AntAgent) and a.role in ["worker", "scavenger", "scout"])
+        
+        # Check if liberation event is active (high inhibitory pheromone = stress signal)
+        liberation_active = self.model.inhibitory_pheromone_strength > 1.5
+        
+        if self.colony_reserves > 500 and worker_count > 50:
+            if liberation_active:
+                # Liberation Mode: Spawn founder queens instead of princesses
+                self.colony_reserves -= 300  # Spend reserves
+                founder_queen = QueenAgent(
+                    self.model.next_id(),
+                    self.model,
+                    self.pos,
+                    tribe_id=self.model.current_generation + self.model.liberation_events + 1,
+                    lifespan_multiplier=self.lifespan_multiplier,
+                    scent_sensitivity=self.scent_sensitivity,
+                )
+                founder_queen.genome = self.genome.copy()  # Inherit genome
+                founder_queen.weights = [w + random.uniform(-0.1, 0.1) for w in self.weights]  # Mutate weights
+                
+                # Find empty adjacent position
+                neighbors = self.model.grid.get_neighborhood(self.pos, moore=True, include_center=False)
+                empty_neighbors = [n for n in neighbors if not any(self.model.grid.get_cell_list_contents([n])) and not self.model.obstacle_map[n[0], n[1]] and self.model.garbage_map[n[0], n[1]] == 0]
+                if empty_neighbors:
+                    spawn_pos = self.random.choice(empty_neighbors)
+                    self.model.grid.place_agent(founder_queen, spawn_pos)
+                    self.model.schedule.add(founder_queen)
+                    
+                    # Give founder queen initial seed swarm (2-4 ants)
+                    seed_swarm_size = np.random.randint(2, 5)
+                    for _ in range(seed_swarm_size):
+                        seed_ant = AntAgent(
+                            self.model.next_id(),
+                            self.model,
+                            spawn_pos,
+                            role="worker",
+                            tribe_id=founder_queen.tribe_id,
+                            parent_queen=founder_queen
+                        )
+                        # Place near founder queen
+                        dx, dy = np.random.randint(-1, 2), np.random.randint(-1, 2)
+                        seed_pos = (max(0, min(self.model.width-1, spawn_pos[0] + dx)),
+                                   max(0, min(self.model.height-1, spawn_pos[1] + dy)))
+                        self.model.grid.place_agent(seed_ant, seed_pos)
+                        self.model.schedule.add(seed_ant)
+            else:
+                # Normal Mode: Spawn princesses
+                self.colony_reserves -= 300  # Spend reserves
+                princess = PrincessAgent(
+                    self.model.next_id(),
+                    self.model,
+                    self.pos,
+                    parent_tribe=self.tribe_id,
+                    parent_lifespan_multiplier=self.lifespan_multiplier,
+                    parent_scent_sensitivity=self.scent_sensitivity,
+                    parent_genome=self.genome,
+                )
+                # Find empty adjacent position
+                neighbors = self.model.grid.get_neighborhood(self.pos, moore=True, include_center=False)
+                empty_neighbors = [n for n in neighbors if not any(self.model.grid.get_cell_list_contents([n])) and not self.model.obstacle_map[n[0], n[1]] and self.model.garbage_map[n[0], n[1]] == 0]
+                if empty_neighbors:
+                    spawn_pos = self.random.choice(empty_neighbors)
+                    self.model.grid.place_agent(princess, spawn_pos)
+                    self.model.schedule.add(princess)
 
         # If there's extra garbage currency, also produce support workers
         if self.model.total_garbage_collected >= effective_spawn_cost:
@@ -247,8 +300,10 @@ class PrincessAgent(Agent):
     def __init__(self, unique_id: int, model: Any, pos: Tuple[int, int], parent_tribe: int = 0, parent_lifespan_multiplier: float = 1.0, parent_scent_sensitivity: float = 1.0, parent_genome: dict = None):
         super().__init__(unique_id, model)
         self.pos = pos
-        self.age = 0
-        self.max_age = 100
+        self.state = "INCUBATE"
+        self.stored_energy = 0
+        self.nest_origin = pos  # Remember where she was born
+        self.flight_vector = None  # For straight-line flight
         self.parent_tribe = parent_tribe
         self.parent_lifespan_multiplier = parent_lifespan_multiplier
         self.parent_scent_sensitivity = parent_scent_sensitivity
@@ -259,47 +314,63 @@ class PrincessAgent(Agent):
         }
 
     def step(self):
-        self.age += 1
+        if self.state == "INCUBATE":
+            # Stay at nest, passively drain colony hunger
+            if self.model.colony_hunger > 0:
+                self.model.colony_hunger = max(0, self.model.colony_hunger - 0.1)
+                self.stored_energy += 0.1
+            if self.stored_energy > 100:
+                self.state = "NUPTIAL_FLIGHT"
+                # Choose random straight-line direction away from nest
+                self.flight_vector = (random.uniform(-1, 1), random.uniform(-1, 1))
+                # Normalize
+                mag = math.sqrt(self.flight_vector[0]**2 + self.flight_vector[1]**2)
+                self.flight_vector = (self.flight_vector[0]/mag, self.flight_vector[1]/mag)
 
-        # Faster exploration, ignore pheromones
-        neighbors = self.model.grid.get_neighborhood(self.pos, moore=True, include_center=False)
-        neighbors = [n for n in neighbors if not self.model.obstacle_map[n[0], n[1]]]
-        if neighbors:
-            dest = self.random.choice(neighbors)
-            self.model.grid.move_agent(self, dest)
+        elif self.state == "NUPTIAL_FLIGHT":
+            # Walk in straight line, ignoring pheromones and obstacles
+            new_x = self.pos[0] + self.flight_vector[0]
+            new_y = self.pos[1] + self.flight_vector[1]
+            new_pos = (int(round(new_x)), int(round(new_y)))
+            # Check bounds
+            if 0 <= new_pos[0] < self.model.width and 0 <= new_pos[1] < self.model.height:
+                # Move even through obstacles for nuptial flight
+                self.model.grid.move_agent(self, new_pos)
+            
+            # Check distance from nest
+            dist = math.sqrt((self.pos[0] - self.nest_origin[0])**2 + (self.pos[1] - self.nest_origin[1])**2)
+            if dist >= self.model.width // 4:
+                # Check for clear spot
+                cell_contents = self.model.grid.get_cell_list_contents([self.pos])
+                if len(cell_contents) == 1:  # Only herself
+                    self.state = "FOUND_COLONY"
 
-        if self.age >= self.max_age:
-            # Land and become a new queen at current location
-            # Check if position is empty (princess should have moved to empty spot)
-            if not any(self.model.grid.get_cell_list_contents([self.pos])):
-                # Mutate offspring traits by 10%
-                mutated_lifespan = self.parent_lifespan_multiplier * random.uniform(1.1, 1.2)
-                mutated_scent = self.parent_scent_sensitivity * random.uniform(1.1, 1.2)
-                new_tribe = self.model.next_tribe_id
-                new_queen = QueenAgent(
-                    self.model.next_id(),
-                    self.model,
-                    self.pos,
-                    tribe_id=new_tribe,
-                    lifespan_multiplier=mutated_lifespan,
-                    scent_sensitivity=mutated_scent,
-                )
-                new_queen.genome = self.parent_genome.copy()  # Inherit genome
-                self.model.grid.place_agent(new_queen, self.pos)
-                self.model.schedule.add(new_queen)
-                self.model.queens_born += 1
-                self.model.current_generation = self.model.queens_born
-                self.model.next_tribe_id += 1
-                # Status update: celebrate new queen birth, boost nearby ants
-                nearby_ants = self.model.grid.get_neighbors(self.pos, moore=True, include_center=False, radius=5)
-                for agent in nearby_ants:
-                    if isinstance(agent, AntAgent):
-                        agent.xp += 10  # Celebration bonus
-                        agent.energy_reserve = min(100.0, agent.energy_reserve + 10.0)  # Energy boost
-                        agent.sugar_saturation = min(1.0, agent.sugar_saturation + 0.2)  # Sugar boost
-                self.model.grid.remove_agent(self)
-                self.model.schedule.remove(self)
-                return
+        elif self.state == "FOUND_COLONY":
+            # Spawn new Queen and remove self
+            new_tribe = self.model.next_tribe_id
+            new_queen = QueenAgent(
+                self.model.next_id(),
+                self.model,
+                self.pos,
+                tribe_id=new_tribe,
+                lifespan_multiplier=self.parent_lifespan_multiplier,
+                scent_sensitivity=self.parent_scent_sensitivity,
+            )
+            new_queen.genome = self.parent_genome.copy()
+            self.model.grid.place_agent(new_queen, self.pos)
+            self.model.schedule.add(new_queen)
+            self.model.queens_born += 1
+            self.model.current_generation = self.model.queens_born
+            self.model.next_tribe_id += 1
+            # Celebration
+            nearby_ants = self.model.grid.get_neighbors(self.pos, moore=True, include_center=False, radius=5)
+            for agent in nearby_ants:
+                if isinstance(agent, AntAgent):
+                    agent.xp += 10
+                    agent.energy_reserve = min(100.0, agent.energy_reserve + 10.0)
+                    agent.sugar_saturation = min(1.0, agent.sugar_saturation + 0.2)
+            self.model.grid.remove_agent(self)
+            self.model.schedule.remove(self)
 
 class AntAgent(Agent):
     def __init__(
@@ -372,6 +443,15 @@ class AntAgent(Agent):
         
         # Track trophallaxis partners for visualization
         self.last_trophallaxis_partner = None
+        
+        # Trophallactic Federated Learning: store best resource location
+        self.best_target_memory = None
+        
+        # 2026 Ultimate Stabilization: Energy-Backed Goal Locking (EBGL)
+        self.goal_escrow = 0.0  # Staked sugar for goal commitment
+        self.goal_locked = False  # Whether current goal is metabolically locked
+        self.goal_lock_time = 0  # Steps since goal was locked
+        self.goal_persistence_bonus = 0.0  # Reward for successful goal completion
 
     def step(self):
         if self.internal_pos is None:
@@ -422,13 +502,41 @@ class AntAgent(Agent):
         self.update_lnn_dynamics()
         self.perform_trophallaxis()
         
+        # Trophallactic Federated Learning: Check for collision-based knowledge sharing
+        cell_mates = self.model.grid.get_cell_list_contents([self.pos])
+        for mate in cell_mates:
+            if isinstance(mate, AntAgent) and mate.unique_id != self.unique_id:
+                self.trophallaxis(mate)
+                break  # Only share with one agent per step
+        
+        # 2026 Ultimate Stabilization: Energy-Backed Goal Locking (EBGL) Management
+        if self.goal_locked:
+            self.goal_lock_time += 1
+            
+            # Goal Failure Check: If energy drops too low before reaching target
+            if self.energy_reserve < 20.0 and self.state == "EXPLOIT_MEMORY":
+                # Metabolic Proof-of-Failure: Lose the staked sugar
+                self.goal_locked = False
+                self.state = "EXPLORE"
+                self.best_target_memory = None
+                self.goal_escrow = 0.0
+                # Penalty for goal failure
+                self.xp = max(0, self.xp - 5)
+                self.model.colony_hunger += 0.05  # Slight colony stress
+        
         # Sugar decay over time
         self.sugar_saturation = max(0.0, self.sugar_saturation - 0.01)
         
         # Energy reserve decay and consumption
-        self.energy_reserve = max(0.0, self.energy_reserve - 0.5)  # Basal metabolic rate
+        energy_burned = 0.5  # Basal metabolic rate
+        self.energy_reserve = max(0.0, self.energy_reserve - energy_burned)
         if self.state == "EXPLORE" or self.state == "RETURN":
-            self.energy_reserve = max(0.0, self.energy_reserve - 0.2)  # Movement cost
+            movement_cost = 0.2
+            self.energy_reserve = max(0.0, self.energy_reserve - movement_cost)
+            energy_burned += movement_cost
+        
+        # Track total energy burned for MPI calculation
+        self.model.total_energy_burned += energy_burned
         
         # Homeostatic Neuro-Modulation: Survival override
         if self.energy_reserve < 30.0:
@@ -465,12 +573,14 @@ class AntAgent(Agent):
         for neighbor_pos in neighbors:
             for agent in self.model.grid.get_cell_list_contents([neighbor_pos]):
                 if isinstance(agent, AntAgent) and agent.tribe_id == self.tribe_id:
-                    # Share 50% of sugar
-                    avg_sugar = (self.sugar_saturation + agent.sugar_saturation) / 2.0
-                    self.sugar_saturation = avg_sugar
-                    agent.sugar_saturation = avg_sugar
+                    # Payload Protection: Agents in RETURN state guard their sugar
+                    if self.state != "RETURN" and agent.state != "RETURN":
+                        # Share 50% of sugar only if neither is carrying payload
+                        avg_sugar = (self.sugar_saturation + agent.sugar_saturation) / 2.0
+                        self.sugar_saturation = avg_sugar
+                        agent.sugar_saturation = avg_sugar
                     
-                    # Average neural weights
+                    # Always share neural weights for social learning
                     for i in range(len(self.neural_state)):
                         avg_state = (self.neural_state[i] + agent.neural_state[i]) / 2.0
                         self.neural_state[i] = avg_state
@@ -478,6 +588,34 @@ class AntAgent(Agent):
                     
                     self.last_trophallaxis_partner = agent.unique_id
                     break
+
+    def trophallaxis(self, other_agent):
+        """Trophallactic Federated Learning: Proof-of-Success Data Transfer with Payload Protection"""
+        sugar_diff = self.sugar_saturation - other_agent.sugar_saturation
+        
+        # Payload Protection Protocol: Agents carrying payload (RETURN state) guard their sugar
+        if self.state != "RETURN" and sugar_diff > 0.2:
+            # Metabolic sharing (only for non-returning agents)
+            transfer_amount = self.sugar_saturation * 0.10
+            self.sugar_saturation -= transfer_amount
+            other_agent.sugar_saturation += transfer_amount
+        
+        # Knowledge sharing: Always transfer best_target_memory if available
+        if self.best_target_memory is not None:
+            # Energy-Backed Goal Locking (EBGL): Stake sugar to commit to goal
+            stake_amount = min(0.2, other_agent.sugar_saturation * 0.5)  # Stake up to 20% or half available
+            
+            if other_agent.sugar_saturation >= stake_amount and not other_agent.goal_locked:
+                # Lock the goal with metabolic commitment
+                other_agent.best_target_memory = self.best_target_memory
+                other_agent.state = "EXPLOIT_MEMORY"
+                other_agent.goal_escrow = stake_amount
+                other_agent.goal_locked = True
+                other_agent.goal_lock_time = 0
+                other_agent.sugar_saturation -= stake_amount
+                
+                # Metabolic commitment signal
+                self.model.swarm_intellect += 5.0  # Knowledge transfer boosts colony intellect
 
     def get_metabolic_preference(self):
         """Softmax utility to choose between Nectar and Garbage based on sugar level."""
@@ -555,6 +693,37 @@ class AntAgent(Agent):
         return actions[max_idx]
 
     def explore_logic(self):
+        # Handle EXPLOIT_MEMORY state: move towards best_target_memory
+        if self.state == "EXPLOIT_MEMORY" and self.best_target_memory is not None:
+            target_x, target_y = self.best_target_memory
+            dx = target_x - self.internal_pos[0]
+            dy = target_y - self.internal_pos[1]
+            dist = math.sqrt(dx**2 + dy**2)
+            if dist < 1.0:  # Reached target
+                # Goal Success: Unlock and reward
+                self.state = "EXPLORE"
+                self.best_target_memory = None
+                self.goal_locked = False
+                # Metabolic reward for success
+                if self.goal_escrow > 0:
+                    reward = self.goal_escrow * 1.5  # 50% bonus
+                    self.sugar_saturation = min(1.0, self.sugar_saturation + reward)
+                    energy_collected = reward * 10
+                    self.energy_reserve = min(100.0, self.energy_reserve + energy_collected)
+                    self.model.total_energy_collected += energy_collected
+                    self.xp += 25  # Experience bonus
+                    self.goal_escrow = 0.0
+                    self.goal_persistence_bonus = reward
+                return
+            else:
+                # Goal Persistence: Stay locked on target
+                if self.goal_locked:
+                    self.heading = math.atan2(dy, dx)
+                    # Proceed with movement below - no distractions allowed
+                else:
+                    self.heading = math.atan2(dy, dx)
+                    # Proceed with movement below
+        
         # 2026 Frontier: Check for Nectar first (premium resource) unless in survival mode
         all_neighbors = self.model.grid.get_neighborhood(self.pos, moore=True, include_center=False)
         
@@ -566,12 +735,15 @@ class AntAgent(Agent):
                     # Consume nectar!
                     self.model.nectar_map[neighbor[0], neighbor[1]] -= 1
                     self.sugar_saturation = min(1.0, self.sugar_saturation + 0.5)  # Massive sugar boost
-                    self.energy_reserve = min(100.0, self.energy_reserve + 20.0)  # Energy boost from nectar
+                    energy_collected = 20.0  # Energy boost from nectar
+                    self.energy_reserve = min(100.0, self.energy_reserve + energy_collected)
+                    self.model.total_energy_collected += energy_collected
                     self.model.total_nectar_collected += 1
                     self.model.swarm_intellect += 10.0  # Boost colony intellect
                     self.state = "RETURN"
                     self.carrying_resource = 200  # Special nectar marker
                     self.pickup_pos = self.pos
+                    self.best_target_memory = neighbor  # Store best resource location
                     return
         
         # Look for adjacent garbage to mine (always priority in survival mode)
@@ -593,12 +765,15 @@ class AntAgent(Agent):
                 self.model.garbage_type_map[neighbor[0], neighbor[1]] = 0
                 self.model.total_garbage_collected += 1
                 self.sugar_saturation = min(1.0, self.sugar_saturation + 0.1)  # Small sugar boost
-                self.energy_reserve = min(100.0, self.energy_reserve + 10.0)  # Energy boost from garbage
+                energy_collected = 10.0  # Energy boost from garbage
+                self.energy_reserve = min(100.0, self.energy_reserve + energy_collected)
+                self.model.total_energy_collected += energy_collected
                 self.state = "RETURN"
                 # Learn success: strengthen MB for current view and 'pickup'
                 left_pos, right_pos = self.get_antenna_positions()
                 view = [self.get_pheromone_at(left_pos), self.get_pheromone_at(right_pos), self.model.colony_hunger]
                 self.update_mushroom_body(view, 'pickup')
+                self.best_target_memory = neighbor  # Store best resource location
                 return
 
         # No resources; use Antennal Tropotaxis for steering
@@ -662,13 +837,61 @@ class AntAgent(Agent):
             self.steps_in_place = 0
 
     def return_logic(self):
-        self.model.pheromone_map[self.pos[0], self.pos[1]] += 5.0
-
-        # Check if at recycling center
-        if abs(self.internal_pos[0] - self.recycling_center[0]) < 1.0 and abs(self.internal_pos[1] - self.recycling_center[1]) < 1.0:
+        # Home Vector: Calculate normalized direction to nest
+        nest_x, nest_y = self.recycling_center
+        dx = nest_x - self.internal_pos[0]
+        dy = nest_y - self.internal_pos[1]
+        dist = math.sqrt(dx**2 + dy**2)
+        if dist > 0:
+            self.heading = math.atan2(dy, dx)
+        
+        # Pheromone Reinforcement: Drop Home-Trail pheromone
+        self.model.home_pheromone_map[self.pos[0], self.pos[1]] += 5.0
+        
+        # Obstacle Avoidance: If direct path blocked, implement right-hand rule
+        # For simplicity, check if next position is obstacle, if so, turn right
+        next_x = self.internal_pos[0] + math.cos(self.heading) * self.speed
+        next_y = self.internal_pos[1] + math.sin(self.heading) * self.speed
+        next_pos = (int(round(next_x)), int(round(next_y)))
+        if (0 <= next_pos[0] < self.model.width and 0 <= next_pos[1] < self.model.height and
+            self.model.obstacle_map[next_pos[0], next_pos[1]]):
+            # Turn right (90 degrees)
+            self.heading += math.pi / 2
+        
+        # Move using calculated heading
+        dx = math.cos(self.heading) * self.speed
+        dy = math.sin(self.heading) * self.speed
+        new_x = self.internal_pos[0] + dx
+        new_y = self.internal_pos[1] + dy
+        grid_x = round(new_x)
+        grid_y = round(new_y)
+        if 0 <= grid_x < self.model.width and 0 <= grid_y < self.model.height and not self.model.obstacle_map[grid_x, grid_y] and self.model.garbage_map[grid_x, grid_y] == 0:
+            self.internal_pos = [new_x, new_y]
+            self.model.grid.move_agent(self, (grid_x, grid_y))
+        else:
+            # If blocked, try turning right and moving
+            self.heading += math.pi / 2
+            dx = math.cos(self.heading) * self.speed
+            dy = math.sin(self.heading) * self.speed
+            new_x = self.internal_pos[0] + dx
+            new_y = self.internal_pos[1] + dy
+            grid_x = round(new_x)
+            grid_y = round(new_y)
+            if 0 <= grid_x < self.model.width and 0 <= grid_y < self.model.height and not self.model.obstacle_map[grid_x, grid_y] and self.model.garbage_map[grid_x, grid_y] == 0:
+                self.internal_pos = [new_x, new_y]
+                self.model.grid.move_agent(self, (grid_x, grid_y))
+        
+        # Arrival Check: If at nest, transfer sugar and switch to EXPLORE
+        if abs(self.internal_pos[0] - nest_x) < 1.0 and abs(self.internal_pos[1] - nest_y) < 1.0:
+            # Transfer sugar to colony reserves
+            if hasattr(self.model, 'queens') and self.model.queens:
+                queen = self.model.queens[0]  # Assuming one queen
+                queen.colony_reserves += self.sugar_saturation
+            self.sugar_saturation = 0.0
             self.state = "EXPLORE"
             self.cx_vector = [0.0, 0.0]  # Reset vector
             self.model.colony_hunger = max(0.0, self.model.colony_hunger - 0.1)
+            # Handle resource delivery as before
             if self.carrying_resource is not None:
                 # 2026 Frontier: Handle Nectar Delivery (Special resource)
                 if self.carrying_resource == 200:
@@ -682,7 +905,9 @@ class AntAgent(Agent):
                             break
                     # Status update: reward the worker for bringing nectar
                     self.xp += 50
-                    self.energy_reserve = min(100.0, self.energy_reserve + 20.0)
+                    energy_collected = 20.0
+                    self.energy_reserve = min(100.0, self.energy_reserve + energy_collected)
+                    self.model.total_energy_collected += energy_collected
                     self.sugar_saturation = min(1.0, self.sugar_saturation + 0.5)
                 elif self.carrying_resource == 99:
                     # ultra resource event
@@ -712,7 +937,9 @@ class AntAgent(Agent):
                                 self.model.schedule.add(child)
                     # Status update: reward the worker for bringing ultra resource
                     self.xp += 100
-                    self.energy_reserve = min(100.0, self.energy_reserve + 50.0)
+                    energy_collected = 50.0
+                    self.energy_reserve = min(100.0, self.energy_reserve + energy_collected)
+                    self.model.total_energy_collected += energy_collected
                     self.sugar_saturation = min(1.0, self.sugar_saturation + 1.0)
                 else:
                     resource_name = self.model.resource_type_map.get(self.carrying_resource, "food")
@@ -726,44 +953,3 @@ class AntAgent(Agent):
                         self.model.colony_biomass += 1
                 self.carrying_resource = None
             return
-
-        # Use CX Path Integration: steer towards inverse of cx_vector
-        target_angle = math.atan2(-self.cx_vector[1], -self.cx_vector[0])
-        angle_diff = target_angle - self.heading
-        # Normalize angle_diff to [-pi, pi]
-        while angle_diff > math.pi:
-            angle_diff -= 2 * math.pi
-        while angle_diff < -math.pi:
-            angle_diff += 2 * math.pi
-        # Steering force
-        steering_force = angle_diff * 0.5  # Adjust fluidity
-        self.heading += steering_force
-
-        # Move
-        dx = math.cos(self.heading) * self.speed
-        dy = math.sin(self.heading) * self.speed
-        new_x = self.internal_pos[0] + dx
-        new_y = self.internal_pos[1] + dy
-
-        # Update CX vector (towards home, so subtract)
-        self.cx_vector[0] -= dx
-        self.cx_vector[1] -= dy
-
-        grid_x = round(new_x)
-        grid_y = round(new_y)
-
-        if 0 <= grid_x < self.model.width and 0 <= grid_y < self.model.height and not self.model.obstacle_map[grid_x, grid_y] and self.model.garbage_map[grid_x, grid_y] == 0:
-            self.internal_pos = [new_x, new_y]
-            self.model.grid.move_agent(self, (grid_x, grid_y))
-        else:
-            # Turn around
-            self.heading += math.pi
-            dx = math.cos(self.heading) * self.speed
-            dy = math.sin(self.heading) * self.speed
-            new_x = self.internal_pos[0] + dx
-            new_y = self.internal_pos[1] + dy
-            grid_x = round(new_x)
-            grid_y = round(new_y)
-            if 0 <= grid_x < self.model.width and 0 <= grid_y < self.model.height and not self.model.obstacle_map[grid_x, grid_y] and self.model.garbage_map[grid_x, grid_y] == 0:
-                self.internal_pos = [new_x, new_y]
-                self.model.grid.move_agent(self, (grid_x, grid_y))
